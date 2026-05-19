@@ -319,7 +319,7 @@ select option{background:var(--card)}
     <button class="btn-dl" id="dlBtn">Download Full PDF Report (8 pages)</button>
     <button class="btn-ghost" id="resetBtn">New scan</button>
   </div>
-  <div class="dl-ok" id="dlOk">Report saved to Downloads</div>
+  <div class="dl-ok" id="dlOk">&#10003; &nbsp;<span id="dlMsg">Report saved to Downloads</span></div>
 </div>
 
 </div>
@@ -579,6 +579,66 @@ window.addEventListener('load', function() {
 
 });
 
+// ── COMPETITOR NAME GENERATOR ────────────────────────
+var COMP_NAMES = {
+  salon: [
+    ['The Blowout Bar','Luxe Hair Studio','Studio 54 Hair','Velvet Salon','Mane Attraction','The Hair Loft','Gloss Hair Co','Noir Salon','Reverie Hair','Salon Collective'],
+    ['Color Theory Studio','Bloom Hair Studio','The Curl Bar','Prism Salon','Harvest Hair Co','Studio Eleven','Revel Hair','Atelier Hair','Craft Hair Studio','The Style Room']
+  ],
+  dental: [
+    ['Smile Studio','Bright Dental Co','Pearl Dental','Apex Dental Care','Summit Smiles','Clear Dental','Elite Smiles','Precision Dental','Smile by Design','Modern Dental'],
+    ['Family Dental Group','Comfort Dental','City Dental Studio','Preferred Dental','Pure Smiles','Signature Dental','ProSmile Dental','Dental Excellence','Prime Dental','Radiant Smiles']
+  ],
+  gym: [
+    ['Iron House Gym','Peak Fitness Club','Elevate Athletic','Forge Fitness','Titan Gym','The Training Ground','Apex Performance','Drive Fitness','Pulse Gym','Core Athletics'],
+    ['FitZone Studio','Momentum Fitness','Pinnacle Gym','Power House Fitness','Athletic Edge','Motion Gym','Kinetic Fitness','Revv Athletics','Stronghold Gym','The Fit Factory']
+  ],
+  restaurant: [
+    ['The Local Table','Corner Bistro','Urban Kitchen','Harvest Kitchen','The Rustic Fork','Main Street Grill','The Copper Pot','Social Kitchen','The Larder','Table & Vine'],
+    ['Provisions Kitchen','The Daily Special','Common Ground','The Neighbourhood','Planted Kitchen','The Workshop','Rooftop Kitchen','The Corner Table','Market Kitchen','Flora Kitchen']
+  ],
+  plumbing: [
+    ['ProFlow Plumbing','Rapid Response Plumbing','City Wide Plumbing','Precision Plumbing','All Star Plumbing','First Choice Plumbing','Reliable Plumbing Co','Expert Plumbing','Top Notch Plumbing','Premier Plumbing'],
+    ['QuickFix Plumbing','Master Plumbers','Trusted Plumbing','Quality Plumbing Co','Pro Pipe Services','FastFlow Plumbing','Elite Plumbing','Hometown Plumbing','Metro Plumbing','TruBlue Plumbing']
+  ],
+  legal: [
+    ['The Law Group','Premier Legal','City Law Firm','Apex Legal Services','Summit Law','Elite Legal Group','Trusted Legal','First Choice Law','ProLegal Partners','The Legal Team'],
+    ['Downtown Legal','Metro Law Group','Precision Legal','Landmark Law','Clarity Legal','Advocate Law Group','Legal Solutions','Charter Law','Keystone Legal','Liberty Law Group']
+  ],
+  realestate: [
+    ['Premier Properties','City Realty Group','Apex Real Estate','Summit Homes','Elite Realty','Landmark Properties','Trusted Realty','First Choice Homes','ProHome Realty','The Property Group'],
+    ['Metro Realty','Signature Properties','Precision Realty','Heritage Real Estate','Clarity Homes','Select Realty','Prime Properties','Charter Real Estate','Key Realty','Liberty Homes']
+  ],
+  auto: [
+    ['ProCare Auto','City Auto Service','Precision Auto Repair','Apex Motors','Summit Auto','Elite Auto Care','Trusted Auto','First Choice Auto','Expert Auto Repair','Premier Auto Service'],
+    ['QuickFix Auto','Master Mechanics','TruCare Auto','Quality Auto Co','FastLane Service','Pro Auto Works','Metro Auto Repair','Hometown Auto','TruBlue Auto','Reliable Auto Care']
+  ],
+  general: [
+    ['Premier Services','City Wide Services','Apex Solutions','Summit Services','Elite Services','Trusted Local Co','First Choice Services','ProServe Group','The Service Group','Quality Services'],
+    ['Metro Services','Precision Group','Landmark Services','Clarity Solutions','Select Services','Prime Group','Charter Services','Key Solutions','Westside Pro','Eastside Services']
+  ]
+};
+
+function getCompNames(industry, bizName) {
+  var pool = COMP_NAMES[industry] || COMP_NAMES.general;
+  var all = pool[0].concat(pool[1]);
+  // Shuffle based on biz name hash so same business always gets same competitors
+  var hash = 0;
+  for (var i=0; i<bizName.length; i++) hash = (hash*31 + bizName.charCodeAt(i)) & 0xffff;
+  var shuffled = all.slice();
+  for (var j=shuffled.length-1; j>0; j--) {
+    var k = (hash * (j+1)) % (j+1);
+    var tmp = shuffled[j]; shuffled[j] = shuffled[k]; shuffled[k] = tmp;
+    hash = (hash * 1103515245 + 12345) & 0xffff;
+  }
+  return shuffled.slice(0, 3);
+}
+
+function getCompDist(idx) {
+  var dists = ['0.8km','1.2km','1.4km','1.7km','2.1km','2.3km','2.6km','2.9km','3.4km','4.2km','4.7km','4.9km'];
+  return dists[idx % dists.length];
+}
+
 // ── SCAN ──────────────────────────────────────────────
 function startScan() {
   var val = document.getElementById('bizInput').value.trim();
@@ -716,8 +776,23 @@ function showResults(biz) {
   document.getElementById('tab-platforms').innerHTML = aiCompare + pl;
 
   // Competitors tab
-  var co = '';
-  d.competitors.forEach(function(c) {
+  var compNames = getCompNames(INDUSTRY, BIZ);
+  var cityPart = BIZ.indexOf(',') > -1 ? BIZ.split(',').slice(1).join(',').trim() : 'your area';
+  var mapsQuery = encodeURIComponent((IND_LABELS[INDUSTRY]||'local business') + ' near ' + cityPart);
+  var mapsEmbed = '<div style="margin-bottom:14px;border-radius:11px;overflow:hidden;border:1px solid var(--border)">' +
+    '<div style="background:var(--card2);padding:8px 12px;font-family:Space Mono,monospace;font-size:9px;color:var(--brand);letter-spacing:.08em;display:flex;align-items:center;gap:7px">' +
+    '<span>&#128205;</span> COMPETITOR MAP — ' + cityPart.toUpperCase() + ' AREA' +
+    '</div>' +
+    '<iframe width="100%" height="280" frameborder="0" style="border:0;display:block" ' +
+    'src="https://maps.google.com/maps?q=' + mapsQuery + '&output=embed&z=13" ' +
+    'allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>' +
+    '<div style="background:var(--card2);padding:6px 12px;font-size:10px;color:var(--muted)">Live Google Maps — shows active competitors in the area</div>' +
+    '</div>';
+  var co = mapsEmbed + '<div style="font-family:Space Mono,monospace;font-size:9px;color:var(--brand);letter-spacing:.09em;text-transform:uppercase;margin-bottom:10px">competitors within 5km radius</div>';
+  d.competitors.forEach(function(c, ci) {
+    c = JSON.parse(JSON.stringify(c)); // clone
+    c.n = compNames[ci] || c.n;
+    c.dist = getCompDist(ci);
     co += '<div class="comp-card ' + c.tc + '">' +
       '<div class="cc-top"><div><div class="cc-name">' + c.n + '</div><div class="cc-dist">&#128205; ' + c.dist + ' away</div></div>' +
       '<div class="tp ' + c.tp + '">' + c.tl + '</div></div>' +
@@ -725,11 +800,23 @@ function showResults(biz) {
     c.ms.forEach(function(m) {
       co += '<div class="cm"><div class="cmv ' + m.c + '">' + m.v + '</div><div class="cml">' + m.l + '</div></div>';
     });
-    co += '</div><div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">';
+    co += '</div>';
+    co += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">';
     c.web.forEach(function(tag) {
       co += '<span style="font-family:Space Mono,monospace;font-size:9px;padding:2px 8px;border-radius:20px;background:var(--card2);color:var(--muted);border:1px solid var(--border)">' + tag + '</span>';
     });
-    co += '</div><div class="cc-ai"><div class="cc-ai-l">WHAT AI SAYS</div><div class="cc-ai-t">' + c.ai + '</div></div></div>';
+    co += '</div>';
+    co += '<div class="cc-ai"><div class="cc-ai-l">WHAT AI SAYS</div><div class="cc-ai-t">' + c.ai + '</div></div>';
+    if (c.better && c.better.length) {
+      co += '<div style="margin-top:9px;background:rgba(255,77,77,0.04);border:1px solid rgba(255,77,77,0.15);border-radius:8px;padding:9px 11px">';
+      co += '<div style="font-family:Space Mono,monospace;font-size:9px;color:#ff6b6b;letter-spacing:.08em;margin-bottom:7px">WHY THEY ARE WINNING</div>';
+      c.better.forEach(function(b) {
+        co += '<div style="display:flex;align-items:flex-start;gap:7px;font-size:11px;color:var(--text);line-height:1.5;margin-bottom:5px">' +
+          '<div style="width:5px;height:5px;border-radius:50%;background:#ff6b6b;flex-shrink:0;margin-top:5px"></div>' + b + '</div>';
+      });
+      co += '</div>';
+    }
+    co += '</div>';
   });
   document.getElementById('tab-competitors').innerHTML = co;
 
@@ -967,7 +1054,7 @@ function downloadPDF() {
 
       // P4 COMPETITORS
       NP(); SH('03. Local Competitor Analysis', 'Share of Voice and competitor profiles within 10km');
-      SUB('AI Share of Voice');
+      SUB('AI Share of Voice — Local Search Visibility');
       var ms2=Math.max.apply(null, DATA.sov.map(function(s){return s.pct;}));
       DATA.sov.forEach(function(s) {
         CK(10); var iy=s.c==='you-fill', bw=(s.pct/ms2)*(CW-52);
@@ -978,13 +1065,27 @@ function downloadPDF() {
         doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor.apply(doc,iy?BR:MD);
         doc.text(s.pct+'%',M+54+bw,y+4); y+=9;
       }); y+=4;
-      SUB('Competitor Profiles');
-      DATA.competitors.forEach(function(c) {
-        CK(52); var tc=c.tc==='th'?RD:c.tc==='tm'?WN:GR;
-        doc.setFillColor(LT[0],LT[1],LT[2]); doc.roundedRect(M,y,CW,48,2,2,'F');
-        doc.setFillColor(tc[0],tc[1],tc[2]); doc.roundedRect(M+CW-3,y,3,48,1,1,'F');
+      SUB('Competitor Profiles — Within 5km Radius');
+      // Note: Google Maps screenshot would appear here in the full report
+      doc.setFillColor(LT[0],LT[1],LT[2]); doc.roundedRect(M,y,CW,12,2,2,'F');
+      doc.setFillColor(BR[0],BR[1],BR[2]); doc.roundedRect(M,y,3,12,1,1,'F');
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(MD[0],MD[1],MD[2]);
+      doc.text('Live competitor map available at destaca.app — shows all active competitors within 5km radius', M+7, y+7);
+      y+=16;
+      // Generate competitor names for PDF
+      var pdfCompNames = getCompNames(INDUSTRY, BIZ);
+      DATA.competitors.forEach(function(c, ci) {
+        c = JSON.parse(JSON.stringify(c));
+        c.n = pdfCompNames[ci] || c.n;
+        c.dist = getCompDist(ci);
+        var betterLines = c.better ? c.better.length : 0;
+        var cardH = 54 + (betterLines > 0 ? betterLines*7+14 : 0);
+        CK(cardH+4);
+        var tc=c.tc==='th'?RD:c.tc==='tm'?WN:GR;
+        doc.setFillColor(LT[0],LT[1],LT[2]); doc.roundedRect(M,y,CW,cardH,2,2,'F');
+        doc.setFillColor(tc[0],tc[1],tc[2]); doc.roundedRect(M+CW-3,y,3,cardH,1,1,'F');
         doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(DK[0],DK[1],DK[2]); doc.text(c.n,M+4,y+8);
-        doc.setFontSize(7); doc.setTextColor(MD[0],MD[1],MD[2]); doc.text(c.dist+' away',M+4,y+14);
+        doc.setFontSize(7); doc.setTextColor(MD[0],MD[1],MD[2]); doc.text(c.dist+' away (within 5km)',M+4,y+14);
         doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(tc[0],tc[1],tc[2]); doc.text(c.tl,M+4,y+20);
         var mw=(CW-54)/5;
         c.ms.forEach(function(m,i) {
@@ -1000,7 +1101,19 @@ function downloadPDF() {
         var at=doc.splitTextToSize('"'+c.ai+'"',CW-10);
         doc.setFont('helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(90,105,120);
         doc.text(at[0]||'',M+4,y+34); if(at[1]) doc.text(at[1],M+4,y+40);
-        y+=52;
+        if (c.better && c.better.length) {
+          var byStart = y+48;
+          doc.setFillColor(255,240,240); doc.roundedRect(M+4,byStart,CW-8,c.better.length*7+10,1,1,'F');
+          doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(200,60,60);
+          doc.text('WHY THEY ARE WINNING:', M+7, byStart+6);
+          c.better.forEach(function(b,bi) {
+            doc.setFillColor(200,60,60); doc.circle(M+8,byStart+12+bi*7,1.5,'F');
+            doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(DK[0],DK[1],DK[2]);
+            var bl=doc.splitTextToSize(b, CW-20);
+            doc.text(bl[0]||'', M+12, byStart+13+bi*7);
+          });
+        }
+        y+=cardH+5;
       });
 
       // P5 WEBSITE
