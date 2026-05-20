@@ -205,7 +205,47 @@ select option{background:var(--card)}
 .dl-ok.show{display:flex}
 
 @media(max-width:600px){.pillars,.adc-row,.tools-grid{grid-template-columns:1fr}.cc-metrics{grid-template-columns:repeat(3,1fr)}}
+
+.map-container {
+  position: relative;
+  border-radius: 11px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.map-header {
+  background: var(--card2);
+  padding: 9px 13px;
+  font-family: 'Space Mono', monospace;
+  font-size: 9px;
+  color: var(--brand);
+  letter-spacing: .08em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.map-header span { color: var(--muted); font-size: 9px; }
+#competitorMap { width: 100%; height: 340px; display: block; background: var(--card); }
+.map-loading {
+  width: 100%;
+  height: 340px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--brand);
+  letter-spacing: .08em;
+}
+.map-footer {
+  background: var(--card2);
+  padding: 7px 13px;
+  font-size: 10px;
+  color: var(--muted);
+}
 </style>
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAQOYB78X5lx4INA9bjEUYlxKFEpWjragU&libraries=places&callback=initMapsReady" async defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -327,6 +367,9 @@ select option{background:var(--card)}
 
 <script>
 // ── STATE ─────────────────────────────────────────────
+window._mapsReady = false;
+window.initMapsReady = function() { window._mapsReady = true; };
+
 var BIZ = '';
 var DATA = null;
 var HEX = '#00E5A0';
@@ -620,9 +663,9 @@ var COMP_NAMES = {
 };
 
 function getCompNames(industry, bizName) {
+  // Fallback names by industry - used if API call fails
   var pool = COMP_NAMES[industry] || COMP_NAMES.general;
   var all = pool[0].concat(pool[1]);
-  // Shuffle based on biz name hash so same business always gets same competitors
   var hash = 0;
   for (var i=0; i<bizName.length; i++) hash = (hash*31 + bizName.charCodeAt(i)) & 0xffff;
   var shuffled = all.slice();
@@ -632,6 +675,47 @@ function getCompNames(industry, bizName) {
     hash = (hash * 1103515245 + 12345) & 0xffff;
   }
   return shuffled.slice(0, 3);
+}
+
+// Real competitor lookup via Anthropic API with web search
+function fetchRealCompetitors(industry, bizName, city, callback) {
+  var indLabel = IND_LABELS[industry] || 'local business';
+  var prompt = 'Search Google for the top 3 real ' + indLabel + ' businesses near ' + city + ' that would be competitors to ' + bizName + '. Return ONLY a JSON array of exactly 3 objects with these fields: name (business name), dist (distance like "1.2km"), rating (like "4.7"), reviews (number like "234"), website (platform like "WordPress" or "Squarespace" or "Unknown"). Example: [{"name":"The Blowout Bar","dist":"1.1km","rating":"4.8","reviews":"312","website":"WordPress"}]. Return ONLY the JSON array, nothing else.';
+  
+  fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 500,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      messages: [{ role: 'user', content: prompt }]
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var text = '';
+    if (data.content) {
+      data.content.forEach(function(block) {
+        if (block.type === 'text') text += block.text;
+      });
+    }
+    // Extract JSON array from response
+    var match = text.match(/\[[\s\S]*\]/);
+    if (match) {
+      try {
+        var competitors = JSON.parse(match[0]);
+        if (competitors && competitors.length >= 3) {
+          callback(null, competitors);
+          return;
+        }
+      } catch(e) {}
+    }
+    callback(new Error('Could not parse'), null);
+  })
+  .catch(function(err) {
+    callback(err, null);
+  });
 }
 
 function getCompDist(idx) {
@@ -674,6 +758,15 @@ function startScan() {
       steps[i].classList.add('active');
       document.getElementById('scanLbl').textContent = labels[i];
       i++;
+      // On step 3 (competitor mapping), kick off real competitor fetch in background
+      if (i === 3) {
+        var cityForSearch = val.indexOf(',') > -1 ? val.split(',').slice(1).join(',').trim() : val;
+        fetchRealCompetitors(INDUSTRY, val, cityForSearch, function(err, comps) {
+          if (!err && comps) {
+            window._realCompetitors = comps;
+          }
+        });
+      }
       setTimeout(next, 750);
     } else {
       steps[steps.length-1].classList.remove('active');
@@ -682,6 +775,173 @@ function startScan() {
     }
   }
   next();
+}
+
+// ── COMPETITOR MAP ────────────────────────────────────
+function buildCompetitorMap(bizName, city, industry) {
+  var mapDiv = document.getElementById('competitorMap');
+  var loadDiv = document.getElementById('mapLoading');
+  if (!mapDiv) return;
+
+  var indLabel = IND_LABELS[industry] || 'local business';
+
+  // Geocode the business address first
+  var geocoder = new google.maps.Geocoder();
+  geocoder.geocode({ address: bizName + ', ' + city }, function(results, status) {
+    var center;
+    if (status === 'OK' && results[0]) {
+      center = results[0].geometry.location;
+    } else {
+      // Fallback: just geocode the city
+      geocoder.geocode({ address: city }, function(r2, s2) {
+        if (s2 === 'OK' && r2[0]) {
+          center = r2[0].geometry.location;
+          renderMap(center);
+        }
+      });
+      return;
+    }
+    renderMap(center);
+  });
+
+  function renderMap(center) {
+    if (loadDiv) loadDiv.style.display = 'none';
+    mapDiv.style.display = 'block';
+
+    var map = new google.maps.Map(mapDiv, {
+      center: center,
+      zoom: 13,
+      styles: [
+        { elementType: 'geometry', stylers: [{ color: '#0A0E14' }] },
+        { elementType: 'labels.text.fill', stylers: [{ color: '#8a9ab0' }] },
+        { elementType: 'labels.text.stroke', stylers: [{ color: '#0A0E14' }] },
+        { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#161e2a' }] },
+        { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#111720' }] },
+        { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#1c2535' }] },
+        { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0d1520' }] },
+        { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#111720' }] },
+        { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#111720' }] }
+      ],
+      disableDefaultUI: false,
+      zoomControl: true,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: true
+    });
+
+    // Draw 5km radius circle
+    new google.maps.Circle({
+      map: map,
+      center: center,
+      radius: 5000,
+      fillColor: '#00E5A0',
+      fillOpacity: 0.06,
+      strokeColor: '#00E5A0',
+      strokeOpacity: 0.4,
+      strokeWeight: 1.5
+    });
+
+    // Pin the scanned business (green star)
+    var mainMarker = new google.maps.Marker({
+      position: center,
+      map: map,
+      title: bizName,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 10,
+        fillColor: '#00E5A0',
+        fillOpacity: 1,
+        strokeColor: '#0A0E14',
+        strokeWeight: 2
+      },
+      zIndex: 999
+    });
+
+    var mainInfo = new google.maps.InfoWindow({
+      content: '<div style="background:#0A0E14;color:#f0f4ff;padding:8px 12px;border-radius:8px;font-family:Syne,sans-serif;min-width:140px">' +
+        '<div style="color:#00E5A0;font-size:11px;font-weight:700;margin-bottom:2px">SCANNED BUSINESS</div>' +
+        '<div style="font-size:12px;font-weight:600">' + bizName + '</div>' +
+        '</div>'
+    });
+    mainMarker.addListener('click', function() { mainInfo.open(map, mainMarker); });
+
+    // Search for nearby competitors using Places API
+    var service = new google.maps.places.PlacesService(map);
+    var searchType = {
+      salon: 'hair_care',
+      dental: 'dentist',
+      gym: 'gym',
+      restaurant: 'restaurant',
+      plumbing: 'plumber',
+      legal: 'lawyer',
+      realestate: 'real_estate_agency',
+      auto: 'car_repair',
+      general: 'establishment'
+    }[industry] || 'establishment';
+
+    service.nearbySearch({
+      location: center,
+      radius: 5000,
+      type: searchType
+    }, function(results, status) {
+      if (status !== google.maps.places.PlacesServiceStatus.OK || !results) return;
+
+      // Store real competitor names for the cards
+      var realNames = [];
+      var realData = [];
+
+      results.slice(0, 8).forEach(function(place, idx) {
+        if (!place.geometry) return;
+
+        var isCompetitor = place.name.toLowerCase() !== bizName.toLowerCase().split(',')[0];
+        if (!isCompetitor) return;
+
+        realNames.push(place.name);
+        realData.push({
+          name: place.name,
+          rating: place.rating ? String(place.rating) : '4.2',
+          reviews: place.user_ratings_total ? String(place.user_ratings_total) : '45',
+          vicinity: place.vicinity || ''
+        });
+
+        var color = idx < 3 ? '#ff4d4d' : idx < 5 ? '#f5a623' : '#6a7a8f';
+        var scale = idx < 3 ? 8 : idx < 5 ? 7 : 6;
+
+        var marker = new google.maps.Marker({
+          position: place.geometry.location,
+          map: map,
+          title: place.name,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: scale,
+            fillColor: color,
+            fillOpacity: 0.9,
+            strokeColor: '#0A0E14',
+            strokeWeight: 1.5
+          }
+        });
+
+        var stars = place.rating ? place.rating.toFixed(1) + ' stars' : 'No rating';
+        var reviews = place.user_ratings_total ? place.user_ratings_total + ' reviews' : '';
+        var threatLabel = idx < 3 ? 'HIGH THREAT' : idx < 5 ? 'MED THREAT' : 'LOW THREAT';
+        var threatColor = idx < 3 ? '#ff4d4d' : idx < 5 ? '#f5a623' : '#6a7a8f';
+
+        var infoContent = '<div style="background:#111720;color:#f0f4ff;padding:10px 13px;border-radius:8px;font-family:Syne,sans-serif;min-width:160px;max-width:200px">' +
+          '<div style="font-size:10px;font-weight:700;color:' + threatColor + ';margin-bottom:4px;font-family:Space Mono,monospace">' + threatLabel + '</div>' +
+          '<div style="font-size:12px;font-weight:700;margin-bottom:3px">' + place.name + '</div>' +
+          '<div style="font-size:11px;color:#6a7a8f">' + stars + (reviews ? ' &bull; ' + reviews : '') + '</div>' +
+          '</div>';
+
+        var infoWindow = new google.maps.InfoWindow({ content: infoContent });
+        marker.addListener('click', function() { infoWindow.open(map, marker); });
+      });
+
+      // Update competitor cards with real names and data
+      if (realData.length >= 3 && window._updateCompetitorCards) {
+        window._updateCompetitorCards(realData.slice(0, 3));
+      }
+    });
+  }
 }
 
 // ── RESULTS ───────────────────────────────────────────
@@ -776,23 +1036,29 @@ function showResults(biz) {
   document.getElementById('tab-platforms').innerHTML = aiCompare + pl;
 
   // Competitors tab
-  var compNames = getCompNames(INDUSTRY, BIZ);
+  // Use real competitor names from API if available, else fallback
+  var compNames;
+  if (window._realCompetitors && window._realCompetitors.length >= 3) {
+    compNames = window._realCompetitors.map(function(c) { return c.name; });
+    // Also patch distances and ratings from real data
+    d.competitors.forEach(function(c, ci) {
+      if (window._realCompetitors[ci]) {
+        var real = window._realCompetitors[ci];
+        if (real.dist) c._realDist = real.dist;
+        if (real.rating) c._realRating = real.rating;
+        if (real.reviews) c._realReviews = real.reviews;
+        if (real.website) c._realWeb = real.website;
+      }
+    });
+  } else {
+    compNames = getCompNames(INDUSTRY, BIZ);
+  }
+  window._realCompetitors = null; // reset for next scan
   var cityPart = BIZ.indexOf(',') > -1 ? BIZ.split(',').slice(1).join(',').trim() : 'your area';
-  var mapsQuery = encodeURIComponent((IND_LABELS[INDUSTRY]||'local business') + ' near ' + cityPart);
-  var mapsEmbed = '<div style="margin-bottom:14px;border-radius:11px;overflow:hidden;border:1px solid var(--border)">' +
-    '<div style="background:var(--card2);padding:8px 12px;font-family:Space Mono,monospace;font-size:9px;color:var(--brand);letter-spacing:.08em;display:flex;align-items:center;gap:7px">' +
-    '<span>&#128205;</span> COMPETITOR MAP — ' + cityPart.toUpperCase() + ' AREA' +
-    '</div>' +
-    '<iframe width="100%" height="280" frameborder="0" style="border:0;display:block" ' +
-    'src="https://maps.google.com/maps?q=' + mapsQuery + '&output=embed&z=13" ' +
-    'allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>' +
-    '<div style="background:var(--card2);padding:6px 12px;font-size:10px;color:var(--muted)">Live Google Maps — shows active competitors in the area</div>' +
-    '</div>';
-  var co = mapsEmbed + '<div style="font-family:Space Mono,monospace;font-size:9px;color:var(--brand);letter-spacing:.09em;text-transform:uppercase;margin-bottom:10px">competitors within 5km radius</div>';
-  d.competitors.forEach(function(c, ci) {
-    c = JSON.parse(JSON.stringify(c)); // clone
-    c.n = compNames[ci] || c.n;
-    c.dist = getCompDist(ci);
+
+  function buildCompCards(competitors) {
+    var html = '<div style="font-family:Space Mono,monospace;font-size:9px;color:var(--brand);letter-spacing:.09em;text-transform:uppercase;margin-bottom:10px">competitors within 5km radius</div>';
+    competitors.forEach(function(c) {
     co += '<div class="comp-card ' + c.tc + '">' +
       '<div class="cc-top"><div><div class="cc-name">' + c.n + '</div><div class="cc-dist">&#128205; ' + c.dist + ' away</div></div>' +
       '<div class="tp ' + c.tp + '">' + c.tl + '</div></div>' +
@@ -816,9 +1082,19 @@ function showResults(biz) {
       });
       co += '</div>';
     }
-    co += '</div>';
+      html += '</div>';
+    });
+    return html;
+  }
+
+  // Build initial cards with generated/API names
+  var initialComps = d.competitors.map(function(c, ci) {
+    var cc = JSON.parse(JSON.stringify(c));
+    cc.n = compNames[ci] || cc.n;
+    cc.dist = getCompDist(ci);
+    return cc;
   });
-  document.getElementById('tab-competitors').innerHTML = co;
+  document.getElementById('competitorCardsWrap').innerHTML = buildCompCards(initialComps);
 
   // Website tab
   var w = WEB[d.webIdx];
@@ -1077,7 +1353,10 @@ function downloadPDF() {
       DATA.competitors.forEach(function(c, ci) {
         c = JSON.parse(JSON.stringify(c));
         c.n = pdfCompNames[ci] || c.n;
-        c.dist = getCompDist(ci);
+        c.dist = c._realDist || getCompDist(ci);
+    if (c._realRating) c.ms[0].v = c._realRating;
+    if (c._realReviews) c.ms[1].v = c._realReviews;
+    if (c._realWeb) c.web[0] = c._realWeb;
         var betterLines = c.better ? c.better.length : 0;
         var cardH = 54 + (betterLines > 0 ? betterLines*7+14 : 0);
         CK(cardH+4);
